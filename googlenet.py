@@ -11,9 +11,9 @@ print("사용 장치:", device)
 train_dir = r"C:\Users\seung\OneDrive\사진\바탕 화면\CNN_project\POC_Dataset\Training"
 test_dir = r"C:\Users\seung\OneDrive\사진\바탕 화면\CNN_project\POC_Dataset\Testing"
 batch_size = 32
-num_epochs = 50 
+num_epochs = 30 
 learning_rate = 0.001
-patience = 7  # early stopping 
+patience = 5  # early stopping 
 
 ### data preprocessing
 transform_train = transforms.Compose([
@@ -152,7 +152,7 @@ def evaluate(model, loader, epoch, mode='Val'):
 
 ### Early Stopping 클래스
 class EarlyStopping:
-    def __init__(self, patience=7, verbose=True, delta=0):
+    def __init__(self, patience=5, verbose=True, delta=0):
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
