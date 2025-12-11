@@ -4,6 +4,8 @@ import torch.optim as optim
 from torchvision import datasets, transforms, models
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
+from sklearn.metrics import precision_score, recall_score, f1_score, classification_report, confusion_matrix
+import numpy as np
 
 device = torch.device("cpu")
 print("사용 장치:", device)
@@ -16,20 +18,20 @@ learning_rate = 0.001
 patience = 7  # early stopping patience
 
 ### data preprocessing
-# data augmentation
+# 더 강력한 데이터 증강 적용
 transform_train = transforms.Compose([
-    transforms.Resize((256, 256)),  
-    transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),  
+    transforms.Resize((256, 256)),  # 더 큰 크기로 리사이즈
+    transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),  # 랜덤 크롭
     transforms.RandomHorizontalFlip(p=0.5),
-    transforms.RandomVerticalFlip(p=0.3),  
-    transforms.RandomRotation(20),  
+    transforms.RandomVerticalFlip(p=0.3),  # 수직 뒤집기 추가
+    transforms.RandomRotation(20),  # 회전 각도 증가
     transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
-    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),  
-    transforms.RandomPerspective(distortion_scale=0.2, p=0.5),  
+    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),  # 이동 및 스케일
+    transforms.RandomPerspective(distortion_scale=0.2, p=0.5),  # 원근 변환
     transforms.ToTensor(),
     transforms.Normalize([0.485, 0.456, 0.406], 
                          [0.229, 0.224, 0.225]),
-    transforms.RandomErasing(p=0.3, scale=(0.02, 0.15))  
+    transforms.RandomErasing(p=0.3, scale=(0.02, 0.15))  # 랜덤 이레이징
 ])
 
 transform_test = transforms.Compose([
@@ -39,11 +41,11 @@ transform_test = transforms.Compose([
                          [0.229, 0.224, 0.225])
 ])
 
-# train dataset 
+# 전체 train dataset 로드
 full_train_dataset = datasets.ImageFolder(train_dir, transform=transform_train)
 test_dataset = datasets.ImageFolder(test_dir, transform=transform_test)
 
-# Train:Validation = 7:3 split
+# Train:Validation = 7:3 분할
 train_size = int(0.7 * len(full_train_dataset))
 val_size = len(full_train_dataset) - train_size
 train_dataset, val_dataset = random_split(full_train_dataset, [train_size, val_size])
@@ -62,10 +64,10 @@ print("class list:", class_names)
 ### googlenet with dropout
 model = models.googlenet(weights=models.GoogLeNet_Weights.IMAGENET1K_V1, dropout=0.5)
 
-# main output layer
+# 메인 출력 레이어 수정
 model.fc = nn.Linear(model.fc.in_features, len(class_names))
 
-\
+# 보조 분류기가 존재하는 경우에만 수정
 if model.aux1 is not None:
     model.aux1.fc2 = nn.Linear(model.aux1.fc2.in_features, len(class_names))
 if model.aux2 is not None:
@@ -76,10 +78,9 @@ model = model.to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-# learning rate scheduler (ReduceLROnPlateau)
+# 학습률 스케줄러 (ReduceLROnPlateau)
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, mode='min', factor=0.5, patience=3
-)
+    optimizer, mode='min', factor=0.5, patience=3)
 
 ### train loop
 def train(model, loader, criterion, optimizer, epoch):
@@ -126,11 +127,14 @@ def train(model, loader, criterion, optimizer, epoch):
     return avg_loss, avg_acc
 
 ### validation/test evaluate
-def evaluate(model, loader, epoch, mode='Val'):
+def evaluate(model, loader, epoch, mode='Val', return_detailed=False):
     model.eval()
     running_loss = 0.0
     correct = 0
     total = 0
+    
+    all_preds = []
+    all_labels = []
 
     pbar = tqdm(loader, desc=f'Epoch {epoch} [{mode}]', leave=False)
 
@@ -147,6 +151,10 @@ def evaluate(model, loader, epoch, mode='Val'):
             correct += (predicted == labels).sum().item()
             running_loss += loss.item()
             
+            # 예측값과 실제값 저장
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            
             current_acc = 100 * correct / total
             pbar.set_postfix({
                 'loss': f'{loss.item():.4f}',
@@ -155,6 +163,15 @@ def evaluate(model, loader, epoch, mode='Val'):
 
     avg_loss = running_loss / len(loader)
     avg_acc = 100 * correct / total
+    
+    if return_detailed:
+        # 상세 메트릭 계산
+        precision = precision_score(all_labels, all_preds, average='weighted', zero_division=0)
+        recall = recall_score(all_labels, all_preds, average='weighted', zero_division=0)
+        f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+        
+        return avg_loss, avg_acc, precision, recall, f1, all_labels, all_preds
+    
     return avg_loss, avg_acc
 
 ### Early Stopping class
@@ -191,7 +208,7 @@ class EarlyStopping:
 
 ### implement
 print("\n학습 시작...\n")
-early_stopping = EarlyStopping(patience=patience)
+early_stopping = EarlyStopping(patience=patience, verbose=True)
 best_val_acc = 0.0
 
 for epoch in range(num_epochs):
@@ -204,7 +221,7 @@ for epoch in range(num_epochs):
     
     scheduler.step(val_loss)
     
-    
+   
     current_lr = optimizer.param_groups[0]['lr']
     
     print(f"[Epoch {epoch+1}/{num_epochs}] "
@@ -212,11 +229,11 @@ for epoch in range(num_epochs):
           f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}% | "
           f"LR: {current_lr:.6f}")
     
-    # Best validation accuracy 
+    # Best validation accuracy update
     if val_acc > best_val_acc:
         best_val_acc = val_acc
     
-    # Early Stopping 
+    # Early Stopping check
     early_stopping(val_loss, model)
     
     if early_stopping.early_stop:
@@ -225,16 +242,51 @@ for epoch in range(num_epochs):
 
 print("\n학습 완료!")
 
-
+# 최고 성능 모델 로드
 print("\n최고 성능 모델로 테스트 진행...")
 model.load_state_dict(torch.load('best_googlenet_model.pth'))
 
-# Test evaluation
-test_loss, test_acc = evaluate(model, test_loader, epoch+1, mode='Test')
-print(f"\n최종 Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2f}%")
+# Test 평가
+test_loss, test_acc, precision, recall, f1, all_labels, all_preds = evaluate(
+    model, test_loader, epoch+1, mode='Test', return_detailed=True
+)
+
+print(f"\n{'='*60}")
+print(f"최종 테스트 결과")
+print(f"{'='*60}")
+print(f"Test Loss:      {test_loss:.4f}")
+print(f"Test Accuracy:  {test_acc:.2f}%")
+print(f"Precision:      {precision:.4f}")
+print(f"Recall:         {recall:.4f}")
+print(f"F1 Score:       {f1:.4f}")
+print(f"{'='*60}")
 print(f"최고 Validation Acc: {best_val_acc:.2f}%")
 
+# 클래스별 상세 분류 리포트
+print(f"\n{'='*60}")
+print("클래스별 상세 성능")
+print(f"{'='*60}")
+print(classification_report(all_labels, all_preds, target_names=class_names, digits=4))
+
+# Confusion Matrix
+print(f"\n{'='*60}")
+print("Confusion Matrix")
+print(f"{'='*60}")
+cm = confusion_matrix(all_labels, all_preds)
+print("예측 →")
+print(f"{'실제 ↓':<20}", end='')
+for name in class_names:
+    print(f"{name[:15]:<18}", end='')
+print()
+for i, name in enumerate(class_names):
+    print(f"{name[:18]:<20}", end='')
+    for j in range(len(class_names)):
+        print(f"{cm[i][j]:<18}", end='')
+    print()
+
 torch.save(model.state_dict(), "final_googlenet_model.pth")
-print("\n모델 저장 완료:")
+print(f"\n{'='*60}")
+print("모델 저장 완료:")
 print("- best_googlenet_model.pth (최고 성능 모델)")
 print("- final_googlenet_model.pth (최종 모델)")
+print(f"{'='*60}")
